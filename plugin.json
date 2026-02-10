@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/SteamClientHomebrew/Millennium/main/src/sys/plugin-schema.json",
+  "name": "ispa",
+  "common_name": "ISPA",
+  "description": "K3rnelPan1c5750 tarafından oyun indirme aracı",
+  "version": "1.0.1",
+  "author": "K3rnelPan1c5750 / kernelos.org"
+}
