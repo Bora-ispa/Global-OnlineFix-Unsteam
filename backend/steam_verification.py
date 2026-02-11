@@ -2,9 +2,23 @@ import os
 import hashlib
 import time
 import random
-import Millennium
-import PluginUtils
 from typing import Dict, Optional, Any
+
+# Millennium ve PluginUtils import
+try:
+    import Millennium
+except ImportError as e:
+    print(f"HATA: Millennium modülü bulunamadı: {e}")
+    raise
+
+try:
+    import PluginUtils
+    logger = PluginUtils.Logger()
+except ImportError as e:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('ispa.steam_verification')
+    logger.error(f"PluginUtils import hatası: {e}")
 
 try:
     import psutil
@@ -13,7 +27,8 @@ except ImportError:
     psutil = None
     PSUTIL_AVAILABLE = False
 
-logger = PluginUtils.Logger()
+# logger zaten yukarda tanımlandı
+# logger = PluginUtils.Logger()  # Bu satırı kaldır
 
 class SteamVerification:
     def __init__(self):
@@ -31,15 +46,15 @@ class SteamVerification:
                 self.steam_pid = random.randint(1000, 65535)
                 return
 
-            if psutil is not None:
-                for proc in psutil.process_iter(['pid', 'name', 'exe']):
-                    try:
-                        info = proc.info
-                        if info['name'] and 'steam' in info['name'].lower():
-                            if info['exe'] and 'steam.exe' in info['exe'].lower():
-                                self.steam_pid = info['pid']
-                                self.steam_process = proc
-                                break
+            # PSUTIL_AVAILABLE kontrolü yeterli, psutil is not None gereksiz
+            for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                try:
+                    info = proc.info
+                    if info['name'] and 'steam' in info['name'].lower():
+                        if info['exe'] and 'steam.exe' in info['exe'].lower():
+                            self.steam_pid = info['pid']
+                            self.steam_process = proc
+                            break
                     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                         continue
 
@@ -73,12 +88,16 @@ class SteamVerification:
                 except Exception:
                     pass
             import platform
-            machine_info = f"{platform.node()}-{platform.processor()}-{os.environ.get('USERNAME', 'unknown')}"
+            import uuid
+            # USERNAME yerine makine UUID kullan - gizliliği korur ama hala unique
+            machine_uuid = str(uuid.getnode())  # MAC adresinden türetilen unique ID
+            machine_info = f"{platform.node()}-{platform.processor()}-{machine_uuid}"
             hasher.update(machine_info.encode())
             self.plugin_checksum = hasher.hexdigest()
         except Exception as e:
             logger.error(f"ispa (steam_verification): checksum hatası: {e}")
-            fallback = f"{time.time()}-{os.environ.get('USERNAME', 'unknown')}-{self.steam_pid}"
+            import uuid
+            fallback = f"{time.time()}-{uuid.getnode()}-{self.steam_pid}"
             self.plugin_checksum = hashlib.sha256(fallback.encode()).hexdigest()
 
     def _get_process_hash(self) -> str:

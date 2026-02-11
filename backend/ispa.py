@@ -1,14 +1,24 @@
 import os
 import zipfile
 import threading
+import shutil
+import requests
 from io import BytesIO
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 
-import PluginUtils
+# PluginUtils import - Millennium plugin ortamında olmalı
+try:
+    import PluginUtils
+    logger = PluginUtils.Logger()
+except ImportError as e:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('ispa')
+    logger.error(f"PluginUtils import hatası - Millennium ortamında değil misiniz? {e}")
+
 from http_client import get_global_client
 from steam_utils import get_stplug_in_path, detect_steam_install_path, has_lua_for_app
-
-logger = PluginUtils.Logger()
 
 def _save_lua_bytes(dest_dir: str, appid: int, content: bytes) -> str:
     os.makedirs(dest_dir, exist_ok=True)
@@ -356,12 +366,85 @@ class IspaManager:
             
             # Marker dosyasını oluştur
             with open(marker_file, 'w') as f:
-                f.write(f'Fix applied: {fix_type} at {os.popen("date").read()}')
+                f.write(f'Fix applied: {fix_type} at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
             
             logger.log(f'ispa: {fix_type} fix applied to appid {appid}')
             return {'success': True, 'message': f'{fix_type} fix başarıyla uygulandı'}
         except Exception as e:
             logger.error(f'ispa: apply_fix hatası {appid}/{fix_type}: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def download_and_apply_fix(self, appid: int, fix_type: str) -> Dict[str, Any]:
+        """generator.ryuu.lol'den fix indir ve uygula"""
+        try:
+            appid = int(appid)
+            fix_type = str(fix_type).lower()
+        except (ValueError, TypeError):
+            return {'success': False, 'error': 'Geçersiz appid veya fix_type'}
+        
+        if fix_type not in ['steam_online', 'bypass', 'denuvo']:
+            return {'success': False, 'error': 'Bilinmeyen fix tipi'}
+        
+        try:
+            # Fix URL'i oluştur
+            fix_url = f'https://generator.ryuu.lol/fixes/{appid}.zip'
+            logger.log(f'ispa: Downloading fix from {fix_url}')
+            
+            # HTTP client ile indir
+            client = get_global_client()
+            response = client.get(fix_url)
+            
+            if not response.get('success'):
+                return {'success': False, 'error': 'Fix indirilemedi: ' + response.get('error', 'Bilinmeyen hata')}
+            
+            # Zip içeriğini al
+            fix_data = response.get('data')
+            if isinstance(fix_data, str):
+                return {'success': False, 'error': 'Fix formatı hatalı'}
+            
+            # Zip'i çıkar
+            from steam_utils import get_stplug_in_path, detect_steam_install_path
+            stplug_path = get_stplug_in_path()
+            steam_path = detect_steam_install_path()
+            
+            if not steam_path:
+                return {'success': False, 'error': 'Steam yolu bulunamadı'}
+            
+            # Zip dosyasını geçici konuma kaydet
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
+                tmp.write(fix_data if isinstance(fix_data, bytes) else str(fix_data).encode())
+                tmp_path = tmp.name
+            
+            try:
+                # Zip'i aç ve içeriği kontrol et
+                with zipfile.ZipFile(tmp_path, 'r') as z:
+                    file_list = z.namelist()
+                    logger.log(f'ispa: Fix archive contains {len(file_list)} files')
+                    
+                    # Fix dosyalarını Steam dizinine çıkar
+                    extract_path = os.path.join(steam_path, 'ispa_fixes', str(appid), fix_type)
+                    os.makedirs(extract_path, exist_ok=True)
+                    
+                    z.extractall(extract_path)
+                    logger.log(f'ispa: Fix extracted to {extract_path}')
+                
+                # Fix marker'ı oluştur
+                marker_file = os.path.join(stplug_path, f'{appid}_{fix_type}_fix')
+                with open(marker_file, 'w') as f:
+                    f.write(f'Fix downloaded and applied: {fix_type} at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\nSource: {fix_url}\nExtracted to: {extract_path}')
+                
+                logger.log(f'ispa: {fix_type} fix downloaded and applied to appid {appid}')
+                return {'success': True, 'message': f'{fix_type} fix başarıyla indirildi ve uygulandı', 'path': extract_path}
+            finally:
+                # Geçici dosyayı temizle
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f'ispa: download_and_apply_fix hatası {appid}/{fix_type}: {e}')
             return {'success': False, 'error': str(e)}
 
     def remove_fix(self, appid: int, fix_type: str) -> Dict[str, Any]:
@@ -428,6 +511,7 @@ class IspaManager:
                 steamcmd = shutil.which('steamcmd') or shutil.which('steamcmd.exe') or shutil.which('SteamCMD.exe')
                 # Try common paths if not in PATH
                 if not steamcmd:
+                    logger.log(f'ispa: steamcmd not found in PATH, checking common locations...')
                     common_paths = [
                         'C:\\Program Files (x86)\\Steam\\steamcmd\\steamcmd.exe',
                         'C:\\steamcmd\\steamcmd.exe',
@@ -437,11 +521,15 @@ class IspaManager:
                     for p in common_paths:
                         if os.path.exists(p):
                             steamcmd = p
+                            logger.log(f'ispa: Found steamcmd at fallback location: {p}')
                             break
-                
+
                 if not steamcmd:
+                    logger.error(f'ispa: steamcmd not found in PATH or common locations')
                     self._set_download_state(appid_local, {'status': 'failed', 'error': 'steamcmd bulunamadi - kurun'})
                     return
+                else:
+                    logger.log(f'ispa: Using steamcmd: {steamcmd}')
 
                 success_count = 0
                 for d in depots:
@@ -465,10 +553,224 @@ class IspaManager:
                     self._set_download_state(appid_local, {'status': 'failed', 'error': 'İndirme başarısız'})
 
             threading.Thread(target=run_install, args=(missing_depots, appid), daemon=True).start()
-            
-            return {'success': True, 'message': f'{len(missing_depots)} içerik indiriliyor...', 'installed': installed, 'total': total, 'missing': len(missing_depots)}
 
-            return {'success': True, 'message': 'Eksik içerikler için indirme başlatıldı (steamcmd varsa)', 'to_install': len(missing_depots), 'missing': len(missing_depots)}
+            return {'success': True, 'message': f'{len(missing_depots)} içerik indiriliyor...', 'installed': installed, 'total': total, 'missing': len(missing_depots)}
         except Exception as e:
             logger.error(f'ispa: install_missing_dlc hatası {appid}: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_game_info(self, appid: int) -> Dict[str, Any]:
+        """Oyun bilgilerini al - uyumluluk kontrolü için"""
+        try:
+            appid = int(appid)
+        except (ValueError, TypeError):
+            return {'success': False, 'error': 'Geçersiz appid'}
+
+        try:
+            # Steam API'den oyun bilgilerini al
+            client = get_global_client()
+            if not client:
+                return {'success': False, 'error': 'HTTP istemcisi alınamadı'}
+
+            # Steam Store API'den oyun bilgilerini al
+            store_url = f'https://store.steampowered.com/api/appdetails?appids={appid}&cc=tr&l=turkish'
+            response = client.get(store_url)
+
+            if not response.get('success'):
+                return {'success': False, 'error': 'Steam API yanıt vermedi'}
+
+            data = response.get('data', {})
+            if str(appid) not in data or not data[str(appid)].get('success'):
+                return {'success': False, 'error': 'Oyun bulunamadı'}
+
+            app_data = data[str(appid)]['data']
+
+            # Önemli bilgileri çıkar
+            game_info = {
+                'name': app_data.get('name', 'Bilinmeyen'),
+                'tags': [tag['name'] for tag in app_data.get('categories', [])] + [tag['description'] for tag in app_data.get('genres', [])],
+                'specs': [spec['name'] for spec in app_data.get('pc_requirements', {}).get('minimum', '').split(', ') if spec.strip()],
+                'noticesText': app_data.get('detailed_description', '') + ' ' + app_data.get('about_the_game', ''),
+                'developers': app_data.get('developers', []),
+                'publishers': app_data.get('publishers', []),
+                'release_date': app_data.get('release_date', {}).get('date', ''),
+                'is_free': app_data.get('is_free', False)
+            }
+
+            return {'success': True, 'game_info': game_info}
+
+        except Exception as e:
+            logger.error(f'ispa: get_game_info hatası {appid}: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def detect_game_path(self, appid: int) -> Optional[str]:
+        """Oyun kurulum yolunu tespit et"""
+        try:
+            appid = int(appid)
+        except (ValueError, TypeError):
+            return None
+
+        try:
+            steam_path = detect_steam_install_path()
+            if not steam_path:
+                return None
+
+            # Steam kütüphane klasörlerini tara
+            library_folders = os.path.join(steam_path, 'steamapps', 'libraryfolders.vdf')
+
+            if os.path.exists(library_folders):
+                with open(library_folders, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Library folder'ları parse et
+                import re
+                folder_matches = re.findall(r'"path"\s*"([^"]*)"', content)
+
+                for folder in folder_matches:
+                    # Her library folder'da appmanifest kontrol et
+                    manifest_path = os.path.join(folder, 'steamapps', f'appmanifest_{appid}.acf')
+                    if os.path.exists(manifest_path):
+                        # Manifest'ten installdir oku
+                        with open(manifest_path, 'r', encoding='utf-8') as mf:
+                            manifest_content = mf.read()
+                            installdir_match = re.search(r'"installdir"\s*"([^"]*)"', manifest_content)
+                            if installdir_match:
+                                game_dir = os.path.join(folder, 'steamapps', 'common', installdir_match.group(1))
+                                if os.path.exists(game_dir):
+                                    return game_dir
+
+            return None
+
+        except Exception as e:
+            logger.error(f'ispa: detect_game_path hatası {appid}: {e}')
+            return None
+
+    def apply_steam_online_fix(self, appid: int, game_path: str, game_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Steam Online fix uygula - Goldberg emulator kullanarak"""
+        try:
+            logger.log(f'ispa: Steam Online fix uygulanıyor - appid: {appid}, path: {game_path}')
+
+            # Goldberg emulator araçlarını kullan
+            plugin_dir = GetPluginDir()
+            goldberg_path = os.path.join(plugin_dir, 'Global-OnlineFix-Unsteam-main', 'goldberg_dlls')
+
+            if not os.path.exists(goldberg_path):
+                return {'success': False, 'error': 'Goldberg emulator bulunamadı'}
+
+            # Gerekli DLL'leri kopyala
+            dll_files = ['steam_api.dll', 'steam_api64.dll']
+            copied_files = []
+
+            for dll in dll_files:
+                src = os.path.join(goldberg_path, dll)
+                dst = os.path.join(game_path, dll)
+
+                if os.path.exists(src):
+                    shutil.copy2(src, dst)
+                    copied_files.append(dst)
+                    logger.log(f'ispa: {dll} kopyalandı: {dst}')
+
+            if copied_files:
+                # Marker oluştur
+                stplug_path = get_stplug_in_path()
+                marker_file = os.path.join(stplug_path, f'{appid}_steam_online_fix')
+                with open(marker_file, 'w') as f:
+                    f.write(f'Steam Online fix applied at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\nFiles: {", ".join(copied_files)}')
+
+                return {'success': True, 'message': f'Steam Online fix uygulandı. {len(copied_files)} dosya kopyalandı.', 'files': copied_files}
+            else:
+                return {'success': False, 'error': 'Uygulanacak dosya bulunamadı'}
+
+        except Exception as e:
+            logger.error(f'ispa: apply_steam_online_fix hatası {appid}: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def apply_bypass_fix(self, appid: int, game_path: str, game_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Bypass fix uygula - Unsteam araçlarını kullanarak"""
+        try:
+            logger.log(f'ispa: Bypass fix uygulanıyor - appid: {appid}, path: {game_path}')
+
+            plugin_dir = GetPluginDir()
+            unsteam_path = os.path.join(plugin_dir, 'Global-OnlineFix-Unsteam-main', 'Unsteam')
+
+            if not os.path.exists(unsteam_path):
+                return {'success': False, 'error': 'Unsteam araçları bulunamadı'}
+
+            # Unsteam araçlarını kopyala
+            tool_files = ['unsteam.dll', 'unsteam.ini', 'winmm.dll']
+            copied_files = []
+
+            for tool in tool_files:
+                src = os.path.join(unsteam_path, tool)
+                dst = os.path.join(game_path, tool)
+
+                if os.path.exists(src):
+                    shutil.copy2(src, dst)
+                    copied_files.append(dst)
+                    logger.log(f'ispa: {tool} kopyalandı: {dst}')
+
+            if copied_files:
+                # Marker oluştur
+                stplug_path = get_stplug_in_path()
+                marker_file = os.path.join(stplug_path, f'{appid}_bypass_fix')
+                with open(marker_file, 'w') as f:
+                    f.write(f'Bypass fix applied at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\nFiles: {", ".join(copied_files)}')
+
+                return {'success': True, 'message': f'Bypass fix uygulandı. {len(copied_files)} dosya kopyalandı.', 'files': copied_files}
+            else:
+                return {'success': False, 'error': 'Uygulanacak dosya bulunamadı'}
+
+        except Exception as e:
+            logger.error(f'ispa: apply_bypass_fix hatası {appid}: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def apply_denuvo_fix(self, appid: int, game_path: str, game_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Denuvo fix uygula - Steamless kullanarak"""
+        try:
+            logger.log(f'ispa: Denuvo fix uygulanıyor - appid: {appid}, path: {game_path}')
+
+            plugin_dir = GetPluginDir()
+            steamless_path = os.path.join(plugin_dir, 'Global-OnlineFix-Unsteam-main', 'steamless')
+
+            if not os.path.exists(steamless_path):
+                return {'success': False, 'error': 'Steamless bulunamadı'}
+
+            # Oyun klasöründe exe dosyalarını bul
+            exe_files = []
+            for file in os.listdir(game_path):
+                if file.lower().endswith('.exe'):
+                    exe_files.append(os.path.join(game_path, file))
+
+            if not exe_files:
+                return {'success': False, 'error': 'Oyun klasöründe exe dosyası bulunamadı'}
+
+            # Ana exe'yi seç (genellikle en büyük olan)
+            main_exe = max(exe_files, key=lambda x: os.path.getsize(x))
+
+            logger.log(f'ispa: Ana exe dosyası: {main_exe}')
+
+            # Steamless ile DRM'i kaldır
+            steamless_exe = os.path.join(steamless_path, 'Steamless.CLI.exe')
+
+            if not os.path.exists(steamless_exe):
+                return {'success': False, 'error': 'Steamless CLI bulunamadı'}
+
+            # Steamless komutunu çalıştır
+            import subprocess
+            cmd = [steamless_exe, main_exe]
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=game_path)
+
+            if result.returncode == 0:
+                # Marker oluştur
+                stplug_path = get_stplug_in_path()
+                marker_file = os.path.join(stplug_path, f'{appid}_denuvo_fix')
+                with open(marker_file, 'w') as f:
+                    f.write(f'Denuvo fix applied at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\nTarget: {main_exe}\nSteamless output: {result.stdout}')
+
+                return {'success': True, 'message': f'Denuvo fix uygulandı. DRM kaldırıldı: {os.path.basename(main_exe)}', 'target': main_exe}
+            else:
+                return {'success': False, 'error': f'Steamless başarısız: {result.stderr}'}
+
+        except Exception as e:
+            logger.error(f'ispa: apply_denuvo_fix hatası {appid}: {e}')
             return {'success': False, 'error': str(e)}

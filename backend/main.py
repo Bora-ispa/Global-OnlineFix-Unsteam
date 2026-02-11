@@ -1,5 +1,19 @@
-import Millennium
-import PluginUtils
+# Critical imports - Millennium plugin ortamında olmalı
+try:
+    import Millennium
+except ImportError as e:
+    print(f"HATA: Millennium modülü bulunamadı. Bu plugin Millennium ortamında çalışmalı. {e}")
+    raise
+
+try:
+    import PluginUtils
+    logger = PluginUtils.Logger()
+except ImportError as e:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('ispa')
+    logger.error(f"PluginUtils import hatası: {e}")
+
 import json
 import os
 import subprocess
@@ -14,7 +28,8 @@ from steam_utils import (
     has_lua_for_app
 )
 
-logger = PluginUtils.Logger()
+# logger zaten yukarda tanımlandı, tekrar tanımlama
+# logger = PluginUtils.Logger()  # Bu satırı kaldır
 
 def GetPluginDir():
     current_file = os.path.realpath(__file__)
@@ -182,6 +197,66 @@ def RemoveFix(appid: int, fix_type: str) -> str:
         logger.error(f'RemoveFix hatası {appid}/{fix_type}: {e}')
         return json.dumps({'success': False, 'error': str(e)})
 
+def DownloadAndApplyFix(appid: int, fix_type: str) -> str:
+    """generator.ryuu.lol'den fix indir ve uygula"""
+    try:
+        if not isinstance(appid, int) or not isinstance(fix_type, str):
+            raise ValueError("appid int, fix_type str olmalı.")
+        result = plugin.ispa_manager.download_and_apply_fix(appid, fix_type)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f'DownloadAndApplyFix hatası {appid}/{fix_type}: {e}')
+        return json.dumps({'success': False, 'error': str(e)})
+
+def ApplyGameFix(appid: int, fix_type: str) -> str:
+    """Oyun için kapsamlı fix uygula - otomatik araç seti kullanarak"""
+    try:
+        if not isinstance(appid, int) or not isinstance(fix_type, str):
+            raise ValueError("appid int, fix_type str olmalı.")
+
+        logger.log(f'ispa: ApplyGameFix başlatıldı - appid: {appid}, fix_type: {fix_type}')
+
+        # Önce oyun bilgilerini al
+        game_info = plugin.ispa_manager.get_game_info(appid)
+        if not game_info.get('success', False):
+            return json.dumps({'success': False, 'error': 'Oyun bilgileri alınamadı'})
+
+        # Oyun kurulum yolunu tespit et
+        game_path = plugin.ispa_manager.detect_game_path(appid)
+        if not game_path:
+            return json.dumps({'success': False, 'error': 'Oyun kurulum yolu bulunamadı'})
+
+        logger.log(f'ispa: Oyun yolu tespit edildi: {game_path}')
+
+        # Fix türüne göre uygun araçları kullan
+        if fix_type == 'steam_online':
+            result = plugin.ispa_manager.apply_steam_online_fix(appid, game_path, game_info)
+        elif fix_type == 'bypass':
+            result = plugin.ispa_manager.apply_bypass_fix(appid, game_path, game_info)
+        elif fix_type == 'denuvo':
+            result = plugin.ispa_manager.apply_denuvo_fix(appid, game_path, game_info)
+        else:
+            return json.dumps({'success': False, 'error': f'Bilinmeyen fix türü: {fix_type}'})
+
+        logger.log(f'ispa: Fix uygulama sonucu: {result}')
+        return json.dumps(result)
+
+    except Exception as e:
+        logger.error(f'ApplyGameFix hatası {appid}/{fix_type}: {e}')
+        return json.dumps({'success': False, 'error': str(e)})
+
+def GetGameInfo(appid: int) -> str:
+    """Oyun bilgilerini al - uyumluluk kontrolü için"""
+    try:
+        if not isinstance(appid, int):
+            raise ValueError("appid parametresi int olmalı.")
+
+        result = plugin.ispa_manager.get_game_info(appid)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f'GetGameInfo hatası {appid}: {e}')
+        return json.dumps({'success': False, 'error': str(e)})
+
 def RestartSteam() -> str:
     try:
         system = platform.system()
@@ -190,11 +265,15 @@ def RestartSteam() -> str:
             logger.log(f'ispa: Windows detected, killing steam.exe...')
             try:
                 subprocess.run(['taskkill', '/IM', 'steam.exe', '/F'], capture_output=True, timeout=5, check=False)
-                logger.log(f'ispa: Steam process killed')
+                # Ayrıca steamwebhelper.exe ve diğer Steam process'lerini de kapat
+                subprocess.run(['taskkill', '/IM', 'steamwebhelper.exe', '/F'], capture_output=True, timeout=5, check=False)
+                subprocess.run(['taskkill', '/IM', 'GameOverlayUI.exe', '/F'], capture_output=True, timeout=5, check=False)
+                logger.log(f'ispa: Steam processes killed')
             except Exception as e:
                 logger.log(f'ispa: taskkill error (not critical): {e}')
             
-            time.sleep(1)
+            # Daha uzun bekleme - Steam'in tamamen kapanması için
+            time.sleep(3)
             
             steam_path = detect_steam_install_path()
             logger.log(f'ispa: Steam path: {steam_path}')
@@ -203,18 +282,16 @@ def RestartSteam() -> str:
                 logger.log(f'ispa: Steam exe path: {steam_exe}, exists: {os.path.exists(steam_exe)}')
                 if os.path.exists(steam_exe):
                     try:
-                        logger.log(f'ispa: Starting steam...')
-                        # Çalışabilecek tüm yöntemleri dene
-                        try:
-                            os.startfile(steam_exe)
-                            logger.log(f'ispa: Steam started via os.startfile')
-                        except Exception as e1:
-                            logger.log(f'ispa: os.startfile failed: {e1}, trying subprocess...')
-                            subprocess.Popen([steam_exe], stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_CONSOLE if hasattr(subprocess, 'CREATE_NEW_CONSOLE') else 0)
-                            logger.log(f'ispa: Steam started via subprocess.Popen')
+                        logger.log(f'ispa: Starting steam via os.startfile...')
+                        os.startfile(steam_exe)
+                        logger.log(f'ispa: Steam started via os.startfile')
+
+                        # Steam'in başladığından emin olmak için kısa bekle
+                        time.sleep(2)
+
                         return json.dumps({'success': True, 'message': 'Steam yeniden başlatıldı'})
                     except Exception as e:
-                        logger.error(f'ispa: Failed to start steam: {e}')
+                        logger.error(f'ispa: Failed to start steam via os.startfile: {e}')
                         return json.dumps({'success': False, 'error': f'Steam başlatılamadı: {str(e)}'})
                 else:
                     logger.error(f'ispa: steam.exe not found at {steam_exe}')
@@ -225,8 +302,14 @@ def RestartSteam() -> str:
         elif system in ('Linux', 'Darwin'):
             logger.log(f'ispa: Unix system detected')
             try:
-                os.system('pkill -9 steam; sleep 2; nohup steam >/dev/null 2>&1 &')
-                logger.log(f'ispa: Steam restarted via pkill')
+                # pkill ile steam'i kapat
+                subprocess.run(['pkill', '-9', 'steam'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                # 2 saniye bekle
+                import time
+                time.sleep(2)
+                # Steam'i yeniden başlat
+                subprocess.Popen(['steam'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                logger.log(f'ispa: Steam restarted via subprocess')
                 return json.dumps({'success': True, 'message': 'Steam yeniden başlatıldı'})
             except Exception as e:
                 logger.error(f'ispa: Unix restart failed: {e}')

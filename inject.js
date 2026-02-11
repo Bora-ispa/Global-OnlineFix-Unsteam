@@ -696,7 +696,7 @@
       { type: 'bypass', icon: '🔓', label: 'Bypass' },
       { type: 'denuvo', icon: '🛡️', label: 'Denuvo' }
     ];
-    
+
     fixItems.forEach(item => {
       const fixItem = document.createElement('div');
       fixItem.className = 'ispa-fix-item';
@@ -706,13 +706,15 @@
         border-radius: 6px;
         font-size: 11px;
         font-weight: 600;
-        background: rgba(200, 50, 50, 0.5);
+        background: linear-gradient(135deg, rgba(100,200,230,0.6) 0%, rgba(80,150,200,0.6) 100%);
         color: #fff;
-        border: 1px solid rgba(220, 80, 80, 0.3);
+        border: 1px solid rgba(150,220,255,0.4);
         display: flex;
         align-items: center;
         gap: 4px;
-        transition: all 0.3s ease;
+        transition: all 0.2s ease;
+        cursor: default;
+        box-shadow: 0 2px 6px rgba(100,200,230,0.2);
       `;
       fixItem.innerHTML = `<span>${item.icon}</span><span>${item.label}</span>`;
       fixWrap.appendChild(fixItem);
@@ -724,6 +726,34 @@
     updateFixStatusBadge(appId);
     
     return fixWrap;
+  }
+
+  async function checkFixCompatibility(appId, fixType) {
+    try {
+      const gameInfo = await callServer('GetGameInfo', { appid: appId });
+      if (!gameInfo.success) return false;
+
+      const { tags, specs, noticesText } = gameInfo;
+
+      const DRM_TERMS = ['requires 3rd-party drm','third-party drm','drm de terceros','denuvo','secucrom','securom','arxan','vmprotect','dmm drm','xadrs drm','rockstar launcher drm','proteccion denuvo'];
+      const ACCOUNT_TERMS = ['requires 3rd-party account','3rd-party account','cuenta de terceros','requiere cuenta','ea account','ea app','ea play','ubisoft connect','uplay','rockstar social club','battle.net','bethesda.net','2k account','epic account','riot account','bnet'];
+
+      const inList = (list, terms) => list.some(x => terms.some(t => x.includes(t)));
+
+      if (fixType === 'denuvo') {
+        return DRM_TERMS.some(t => noticesText.includes(t));
+      } else if (fixType === 'bypass') {
+        return ACCOUNT_TERMS.some(t => noticesText.includes(t)) || inList(tags, ACCOUNT_TERMS) || inList(specs, ACCOUNT_TERMS);
+      } else if (fixType === 'steam_online') {
+        // Steam online fix genellikle single-player oyunlar için
+        return true; // Her oyun için potansiyel olarak uyumlu
+      }
+
+      return false;
+    } catch (e) {
+      console.error(`[ISPA] checkFixCompatibility error:`, e);
+      return false;
+    }
   }
 
   function updateFixStatusBadge(appId) {
@@ -1131,6 +1161,7 @@
         <div style="padding: 12px; background: rgba(100,200,230,0.1); border-radius:8px; border-left:3px solid rgba(100,200,230,0.5); display:flex; justify-content:space-between; align-items:center;">
           <span>${item.icon} ${item.label}</span>
           <div style="display:flex; gap:4px;">
+            <button class="ispa-fix-download" data-fix="${item.type}" style="padding:4px 10px; background:rgba(100,220,100,0.5); border:1px solid rgba(150,255,150,0.3); border-radius:4px; color:#fff; cursor:pointer; font-size:11px;">📥 İndir</button>
             <button class="ispa-fix-toggle" data-action="apply" data-fix="${item.type}" style="padding:4px 10px; background:rgba(100,200,230,0.5); border:1px solid rgba(150,220,255,0.3); border-radius:4px; color:#fff; cursor:pointer; font-size:11px;">+ Ekle</button>
             <button class="ispa-fix-toggle" data-action="remove" data-fix="${item.type}" style="padding:4px 10px; background:rgba(200,100,100,0.5); border:1px solid rgba(220,150,150,0.3); border-radius:4px; color:#fff; cursor:pointer; font-size:11px;">- Kaldır</button>
           </div>
@@ -1140,7 +1171,8 @@
     
     buttonsHTML += `</div>
       <div style="margin-top:16px; padding:12px; background:rgba(100,200,230,0.1); border-radius:8px; border-left:3px solid rgba(100,200,230,0.5); font-size:12px; color:#aaa;">
-        ℹ️ Fixler uygulandığında uyumluluk badge'i yeşile döner.
+        ℹ️ <strong>İndir</strong> butonu generator.ryuu.lol'den otomatik fix indirir ve uygular.<br>
+        <strong>Ekle/Kaldır</strong> butonları manuel marker dosyası oluşturur/siler.
       </div>
       <button style="width:100%; margin-top:16px; padding:8px; background:rgba(100,150,180,0.5); border:1px solid rgba(150,200,255,0.3); border-radius:8px; color:#fff; cursor:pointer;" onclick="this.closest('.ispa-overlay').remove();">Kapat</button>`;
     
@@ -1148,8 +1180,101 @@
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     
-    // Fix toggle butonlarına click handler ekle
+    // Fix download butonlarına click handler ekle
     statusFetch.then(() => {
+      modal.querySelectorAll('.ispa-fix-download').forEach(btn => {
+        const fixType = btn.dataset.fix;
+        
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          console.log(`[ISPA] DownloadAndApplyFix for ${fixType}`);
+          
+          const progressOverlay = document.createElement('div');
+          progressOverlay.style.cssText = `
+            position: fixed; top: 50%; left: 50%; 
+            transform: translate(-50%, -50%);
+            background: rgba(15,15,25,0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(150,200,255,0.2);
+            border-radius: 16px;
+            padding: 24px;
+            z-index: 1000001;
+            color: #fff;
+            text-align: center;
+          `;
+          progressOverlay.innerHTML = `
+            <div style="font-weight:700; margin-bottom:12px;">📥 Fix İndiriliyor...</div>
+            <div style="font-size:12px;">generator.ryuu.lol'den indiriliyor...</div>
+          `;
+          document.body.appendChild(progressOverlay);
+          
+          callServer('DownloadAndApplyFix', { appid: appId, fix_type: fixType }).then(r => {
+            console.log(`[ISPA] DownloadAndApplyFix response:`, r);
+            progressOverlay.remove();
+            overlay.remove();
+            
+            if (r && r.success) {
+              updateFixStatusBadge(appId);
+              // Başarı mesajı göster
+              const successOverlay = document.createElement('div');
+              successOverlay.className = 'ispa-overlay';
+              const successModal = document.createElement('div');
+              successModal.style.cssText = `
+                position: fixed; top: 50%; left: 50%; 
+                transform: translate(-50%, -50%);
+                background: rgba(15,15,25,0.95);
+                backdrop-filter: blur(20px);
+                border: 1px solid rgba(100,255,100,0.2);
+                border-radius: 16px;
+                padding: 24px;
+                z-index: 1000001;
+                color: #fff;
+                min-width: 300px;
+              `;
+              successModal.innerHTML = `
+                <div style="font-weight:700; color:#8f8; margin-bottom:12px;">✅ Başarılı</div>
+                <div style="font-size:12px; margin-bottom:16px;">${r.message || 'Fix başarıyla indirildi ve uygulandı'}</div>
+                <button style="width:100%; padding:8px; background:rgba(100,150,100,0.5); border:1px solid rgba(150,200,150,0.3); border-radius:8px; color:#fff; cursor:pointer;" onclick="this.closest('.ispa-overlay').remove();">Tamam</button>
+              `;
+              successOverlay.appendChild(successModal);
+              document.body.appendChild(successOverlay);
+              setTimeout(() => {
+                successOverlay.remove();
+                showFixMenu(appId);
+              }, 2000);
+            } else {
+              const errorOverlay = document.createElement('div');
+              errorOverlay.className = 'ispa-overlay';
+              const errorModal = document.createElement('div');
+              errorModal.style.cssText = `
+                position: fixed; top: 50%; left: 50%; 
+                transform: translate(-50%, -50%);
+                background: rgba(15,15,25,0.95);
+                backdrop-filter: blur(20px);
+                border: 1px solid rgba(255,100,100,0.2);
+                border-radius: 16px;
+                padding: 24px;
+                z-index: 1000001;
+                color: #fff;
+                min-width: 300px;
+              `;
+              errorModal.innerHTML = `
+                <div style="font-weight:700; color:#f88; margin-bottom:12px;">❌ Hata</div>
+                <div style="font-size:12px; margin-bottom:16px;">${r?.error || 'Fix indirilemedi. Bu oyun için fix mevcut olmayabilir.'}</div>
+                <button style="width:100%; padding:8px; background:rgba(150,100,100,0.5); border:1px solid rgba(200,150,150,0.3); border-radius:8px; color:#fff; cursor:pointer;" onclick="this.closest('.ispa-overlay').remove();">Kapat</button>
+              `;
+              errorOverlay.appendChild(errorModal);
+              document.body.appendChild(errorOverlay);
+            }
+          }).catch(e => {
+            console.error(`[ISPA] DownloadAndApplyFix error:`, e);
+            progressOverlay.remove();
+            overlay.remove();
+          });
+        };
+      });
+      
+      // Fix toggle butonlarına click handler ekle
       modal.querySelectorAll('.ispa-fix-toggle').forEach(btn => {
         const fixType = btn.dataset.fix;
         const action = btn.dataset.action;
