@@ -2,10 +2,22 @@ import os
 import sys
 from typing import Optional
 import re
-import Millennium
-import PluginUtils
 
-logger = PluginUtils.Logger()
+# Millennium ve PluginUtils import
+try:
+    import Millennium
+except ImportError as e:
+    print(f"HATA: Millennium modülü bulunamadı: {e}")
+    raise
+
+try:
+    import PluginUtils
+    logger = PluginUtils.Logger()
+except ImportError as e:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('ispa.steam_utils')
+    logger.error(f"PluginUtils import hatası: {e}")
 
 if sys.platform.startswith('win'):
     try:
@@ -181,12 +193,7 @@ def get_app_dlc_info(appid: int) -> dict:
                                         total_depots.add(m.group(1))
                                 break
 
-            # Fallback: if no depots found, count all numeric patterns in content as a last resort
-            if not total_depots:
-                all_nums = re.findall(r'"(\d{5,9})"', content)
-                for num in all_nums:
-                    if num not in installed_depots:
-                        total_depots.add(num)
+            # Fallback kaldırıldı - sadece gerçek depot pattern'leri kullanılıyor
         
         installed = len(installed_depots)
         total = len(total_depots)

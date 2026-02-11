@@ -1,9 +1,20 @@
 import json
 from typing import Dict, Any
-import PluginUtils
+
+# PluginUtils import
+try:
+    import PluginUtils
+    logger = PluginUtils.Logger()
+except ImportError as e:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('ispa.api_manager')
+    logger.error(f"PluginUtils import hatası: {e}")
+
 from http_client import get_global_client
 
-logger = PluginUtils.Logger()
+# logger zaten yukarda tanımlandı
+# logger = PluginUtils.Logger()  # Bu satırı kaldır
 
 HOST_BASE = 'https://kernelos.org'
 DOWNLOAD_GEN_URL = HOST_BASE + '/games/download.php?gen=1&id={appid}'
@@ -28,11 +39,17 @@ class APIManager:
                 return {'success': False, 'error': res.get('error', 'İstek başarısız')}
             data = res.get('data')
             if isinstance(data, (bytes, bytearray)):
-                data = data.decode('utf-8', errors='replace')
+                # strict mode kullan - bozuk data yakalansın
+                try:
+                    data = data.decode('utf-8', errors='strict')
+                except UnicodeDecodeError as e:
+                    logger.error(f'APIManager: UTF-8 decode hatası: {e}')
+                    return {'success': False, 'error': 'Yanıt geçersiz UTF-8 içeriyor'}
             if isinstance(data, str):
                 try:
                     data = json.loads(data)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.error(f'APIManager: JSON parse hatası: {e}')
                     return {'success': False, 'error': 'Generator tarafından geçersiz JSON döndürüldü'}
             if not isinstance(data, dict) or 'url' not in data:
                 return {'success': False, 'error': 'Yanıt bozuk (url yok)'}

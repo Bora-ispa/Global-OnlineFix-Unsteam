@@ -1,5 +1,14 @@
 from typing import Optional, Dict, Any, Tuple
-import PluginUtils
+
+# PluginUtils import
+try:
+    import PluginUtils
+    logger = PluginUtils.Logger()
+except ImportError as e:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('ispa.http_client')
+    logger.error(f"PluginUtils import hatası: {e}")
 
 try:
     import httpx
@@ -12,7 +21,8 @@ except ImportError:
     Response = None
     HTTPX_AVAILABLE = False
 
-logger = PluginUtils.Logger()
+# logger zaten yukarda tanımlandı
+# logger = PluginUtils.Logger()  # Bu satırı kaldır
 
 PLUGIN_UA = 'ispa-plugin/1.0.0 (Millennium)'
 WAF_HEADER_NAME = 'X-IspaUA'
@@ -50,11 +60,28 @@ class HTTPClient:
         return headers
 
     def _success_json(self, response: Response) -> Dict[str, Any]:
+        # Tip kontrolü - Response objesi olmalı
+        if response is None:
+            logger.error('HTTPClient: _success_json called with None response')
+            return {'success': False, 'error': 'Response nesnesi None', 'status_code': None}
+        
+        # httpx.Response tipinde olmadığı durumlar için kontrol
+        if HTTPX_AVAILABLE and not isinstance(response, Response):
+            logger.error(f'HTTPClient: Expected Response object, got {type(response).__name__}')
+            return {'success': False, 'error': f'Geçersiz response tipi: {type(response).__name__}', 'status_code': None}
+        
         try:
             data = response.json()
-        except Exception:
-            data = response.text
-        return {'success': True, 'data': data, 'status_code': response.status_code}
+        except (ValueError, AttributeError) as e:
+            # JSON parse hatası veya response.json() metodu yoksa text kullan
+            logger.warning(f'HTTPClient: JSON parse failed, using text: {e}')
+            data = response.text if hasattr(response, 'text') else str(response)
+        except Exception as e:
+            logger.error(f'HTTPClient: Unexpected error in _success_json: {e}')
+            data = str(response)
+        
+        status_code = getattr(response, 'status_code', None)
+        return {'success': True, 'data': data, 'status_code': status_code}
 
     def _error_dict(self, url: str, e: Exception) -> Dict[str, Any]:
         if HTTPX_AVAILABLE and HTTPStatusError is not None and isinstance(e, HTTPStatusError):
