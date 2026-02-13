@@ -2,7 +2,6 @@ import os
 import zipfile
 import threading
 import shutil
-import requests
 from io import BytesIO
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -19,6 +18,17 @@ except ImportError as e:
 
 from http_client import get_global_client
 from steam_utils import get_stplug_in_path, detect_steam_install_path, has_lua_for_app
+import os
+
+def GetPluginDir():
+    """Eklenti dizinini al"""
+    current_file = os.path.realpath(__file__)
+    if current_file.endswith('/ispa.py/ispa.py') or current_file.endswith('\\ispa.py\\ispa.py'):
+        current_file = current_file[:-8]
+    elif current_file.endswith('/ispa.py') or current_file.endswith('\\ispa.py'):
+        current_file = current_file[:-7]
+    backend_dir = os.path.dirname(current_file) if current_file.endswith('ispa.py') else current_file
+    return os.path.dirname(backend_dir)
 
 def _save_lua_bytes(dest_dir: str, appid: int, content: bytes) -> str:
     os.makedirs(dest_dir, exist_ok=True)
