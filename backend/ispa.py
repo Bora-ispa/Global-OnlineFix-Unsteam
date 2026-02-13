@@ -283,6 +283,79 @@ class IspaManager:
             logger.error(f'ispa: check_dlc hatası {appid}: {e}')
             return {'success': False, 'error': str(e)}
 
+    def check_fix_available(self, appid: int) -> Dict[str, Any]:
+        """Fix dosyasının mevcut olup olmadığını kontrol et"""
+        try:
+            appid = int(appid)
+        except (ValueError, TypeError):
+            return {'success': False, 'error': 'Geçersiz appid'}
+        
+        try:
+            from steam_utils import get_stplug_in_path, detect_steam_install_path
+            
+            # Global-OnlineFix-Unsteam-main klasörünü kontrol et
+            stplug_path = get_stplug_in_path()
+            plugin_dir = os.path.dirname(os.path.dirname(stplug_path))
+            global_fix_dir = os.path.join(plugin_dir, 'Global-OnlineFix-Unsteam-main')
+            
+            available_fixes = {
+                'steam_online': False,
+                'bypass': False,
+                'denuvo': False
+            }
+            
+            # Önce App ID spesifik fix'i kontrol et (Steam Online/{appid}/)
+            steam_online_app_folder = os.path.join(global_fix_dir, 'Steam Online', str(appid))
+            if os.path.exists(steam_online_app_folder) and os.listdir(steam_online_app_folder):
+                # App ID için özel fix var
+                available_fixes['steam_online'] = True
+                logger.log(f'ispa: App ID {appid} için Steam Online fix bulundu')
+            
+            # App ID spesifik fix yoksa, genel fix'leri kontrol et
+            if not available_fixes['steam_online']:
+                # Global-OnlineFix-Unsteam-main klasöründe genel fix var mı kontrol et
+                if os.path.exists(global_fix_dir):
+                    fix_mappings = {
+                        'steam_online': ['goldberg_dlls'],
+                        'bypass': ['Unsteam'],
+                        'denuvo': ['steamless']
+                    }
+                    
+                    for fix_type, target_dirs in fix_mappings.items():
+                        for target_dir in target_dirs:
+                            source_path = os.path.join(global_fix_dir, target_dir)
+                            if os.path.exists(source_path) and os.listdir(source_path):
+                                available_fixes[fix_type] = True
+                                break
+            
+            # generator.ryuu.lol'de fix var mı kontrol et (sadece hiçbir fix bulunamazsa)
+            if not any(available_fixes.values()):
+                try:
+                    client = get_global_client()
+                    fix_url = f'https://generator.ryuu.lol/fixes/{appid}.zip'
+                    response = client.raw_get(fix_url)
+                    if response[0] == 200:
+                        # Herhangi bir fix tipi için fix mevcut
+                        available_fixes = {
+                            'steam_online': True,
+                            'bypass': True,
+                            'denuvo': True
+                        }
+                except Exception:
+                    pass
+            
+            any_available = any(available_fixes.values())
+            
+            return {
+                'success': True,
+                'available': any_available,
+                'fixes': available_fixes,
+                'message': 'Fix mevcut' if any_available else 'Fix bulunamadı'
+            }
+        except Exception as e:
+            logger.error(f'ispa: check_fix_available hatası {appid}: {e}')
+            return {'success': False, 'error': str(e), 'available': False, 'fixes': {'steam_online': False, 'bypass': False, 'denuvo': False}}
+
     def get_fix_status(self, appid: int) -> Dict[str, Any]:
         """Fix durumlarını kontrol et (Steam Online, Bypass, Denuvo)"""
         try:

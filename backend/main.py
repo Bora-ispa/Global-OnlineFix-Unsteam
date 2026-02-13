@@ -27,6 +27,19 @@ from steam_utils import (
     detect_steam_install_path,
     has_lua_for_app
 )
+from steam_verification import SteamVerification
+
+# Steam doğrulama örneği oluştur
+_steam_verification = None
+
+def get_steam_verification():
+    global _steam_verification
+    if _steam_verification is None:
+        try:
+            _steam_verification = SteamVerification()
+        except Exception as e:
+            logger.warn(f"SteamVerification başlatılamadı: {e}")
+    return _steam_verification
 
 # logger zaten yukarda tanımlandı, tekrar tanımlama
 # logger = PluginUtils.Logger()  # Bu satırı kaldır
@@ -177,6 +190,17 @@ def GetFixStatus(appid: int) -> str:
         logger.error(f'GetFixStatus hatası {appid}: {e}')
         return json.dumps({'success': False, 'error': str(e)})
 
+def CheckFixAvailable(appid: int) -> str:
+    """Fix dosyasının mevcut olup olmadığını kontrol et"""
+    try:
+        if not isinstance(appid, int):
+            raise ValueError("appid parametresi int olmalı.")
+        result = plugin.ispa_manager.check_fix_available(appid)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f'CheckFixAvailable hatası {appid}: {e}')
+        return json.dumps({'success': False, 'error': str(e), 'available': False})
+
 def ApplyFix(appid: int, fix_type: str) -> str:
     try:
         if not isinstance(appid, int) or not isinstance(fix_type, str):
@@ -206,6 +230,19 @@ def DownloadAndApplyFix(appid: int, fix_type: str) -> str:
         return json.dumps(result)
     except Exception as e:
         logger.error(f'DownloadAndApplyFix hatası {appid}/{fix_type}: {e}')
+        return json.dumps({'success': False, 'error': str(e)})
+
+def GetVerificationHeaders() -> str:
+    """Steam doğrulama başlıklarını döndürür"""
+    try:
+        verification = get_steam_verification()
+        if verification:
+            headers = verification.get_verification_headers()
+            return json.dumps({'success': True, 'headers': headers})
+        else:
+            return json.dumps({'success': False, 'error': 'SteamVerification başlatılamadı'})
+    except Exception as e:
+        logger.error(f'GetVerificationHeaders hatası: {e}')
         return json.dumps({'success': False, 'error': str(e)})
 
 def RestartSteam() -> str:
